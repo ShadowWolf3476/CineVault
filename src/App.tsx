@@ -18,6 +18,7 @@ type MovieCard = {
   genres: string[]
   runtime: string
   poster: string
+  overview?: string
 }
 
 type WatchedItem = {
@@ -29,6 +30,7 @@ type WatchedItem = {
   notes?: string
   dateWatched: string
   year?: string
+  overview?: string
 }
 
 type PlanItem = {
@@ -38,6 +40,7 @@ type PlanItem = {
   genres: string[]
   addedDate: string
   year?: string
+  overview?: string
 }
 
 const watchedSeed: WatchedItem[] = [
@@ -112,10 +115,20 @@ function App() {
   const [planToWatch, setPlanToWatch] = useState<PlanItem[]>([])
   const [activeLog, setActiveLog] = useState<{
     mode: 'add' | 'edit'
-    movie: { id: number; title: string; poster: string; genres: string[]; year?: string }
+    movie: { id: number; title: string; poster: string; genres: string[]; year?: string; overview?: string }
   } | null>(null)
   const [logRating, setLogRating] = useState(4)
   const [logNotes, setLogNotes] = useState('')
+  const [libraryFilter, setLibraryFilter] = useState<'all' | 'plan' | 'watched'>('all')
+  const [libraryQuery, setLibraryQuery] = useState('')
+  const [activeDetails, setActiveDetails] = useState<{
+    id: number
+    title: string
+    overview: string
+    poster?: string
+    year?: string
+    genres?: string[]
+  } | null>(null)
 
   useEffect(() => {
     const saved = localStorage.getItem('theme')
@@ -203,6 +216,32 @@ function App() {
     localStorage.setItem('theme', next)
   }
 
+  const scrollToSection = (id: string) => {
+    const target = document.getElementById(id)
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+
+  const openDetails = (movie: { id: number; title: string; overview?: string; poster?: string; year?: string; genres?: string[] }) => {
+    if (!movie.overview) return
+    setActiveDetails({
+      id: movie.id,
+      title: movie.title,
+      overview: movie.overview,
+      poster: movie.poster,
+      year: movie.year,
+      genres: movie.genres,
+    })
+  }
+
+  const getStatusLabel = (id: number) => {
+    if (watched.some((item) => item.id === id)) return 'Watched'
+    if (planToWatch.some((item) => item.id === id)) return 'Saved for later'
+    return 'None'
+  }
+
+
   const addToPlan = (movie: MovieCard) => {
     if (planToWatch.some((item) => item.id === movie.id) || watched.some((item) => item.id === movie.id)) {
       return
@@ -213,12 +252,13 @@ function App() {
       poster: movie.poster,
       genres: movie.genres,
       year: movie.year,
+      overview: movie.overview,
       addedDate: new Date().toISOString(),
     }
     setPlanToWatch((prev) => [next, ...prev])
   }
 
-  const openLogForMovie = (movie: { id: number; title: string; poster: string; genres: string[]; year?: string }, mode: 'add' | 'edit') => {
+  const openLogForMovie = (movie: { id: number; title: string; poster: string; genres: string[]; year?: string; overview?: string }, mode: 'add' | 'edit') => {
     setActiveLog({ movie, mode })
     if (mode === 'edit') {
       const existing = watched.find((item) => item.id === movie.id)
@@ -238,6 +278,7 @@ function App() {
       poster: activeLog.movie.poster,
       genres: activeLog.movie.genres,
       year: activeLog.movie.year,
+      overview: activeLog.movie.overview,
       userRating: logRating,
       notes: logNotes.trim() ? logNotes.trim() : undefined,
       dateWatched: new Date().toISOString(),
@@ -254,6 +295,43 @@ function App() {
   const averageRating = watched.length
     ? watched.reduce((sum, movie) => sum + movie.userRating, 0) / watched.length
     : 0
+
+  const filteredLibrary = useMemo(() => {
+    const normalized = [
+      ...watched.map((item) => ({
+        id: item.id,
+        title: item.title,
+        poster: item.poster,
+        genres: item.genres,
+        year: item.year,
+        status: 'watched' as const,
+        date: item.dateWatched,
+        userRating: item.userRating,
+        notes: item.notes,
+        overview: item.overview,
+      })),
+      ...planToWatch.map((item) => ({
+        id: item.id,
+        title: item.title,
+        poster: item.poster,
+        genres: item.genres,
+        year: item.year,
+        status: 'plan' as const,
+        date: item.addedDate,
+        overview: item.overview,
+      })),
+    ]
+
+    const queryText = libraryQuery.trim().toLowerCase()
+    const filtered = normalized.filter((item) => {
+      if (libraryFilter !== 'all' && item.status !== libraryFilter) return false
+      if (!queryText) return true
+      const haystack = `${item.title} ${item.genres.join(' ')}`.toLowerCase()
+      return haystack.includes(queryText)
+    })
+
+    return filtered.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
+  }, [libraryFilter, libraryQuery, planToWatch, watched])
 
   return (
     <div className="page">
@@ -279,8 +357,12 @@ function App() {
           </div>
         </div>
         <div className="top-actions">
-          <button className="chip">Plan to Watch</button>
-          <button className="chip outline">Watched</button>
+          <button className="chip" onClick={() => { setLibraryFilter('plan'); scrollToSection('library') }}>
+            Plan to Watch
+          </button>
+          <button className="chip outline" onClick={() => { setLibraryFilter('watched'); scrollToSection('library') }}>
+            Watched
+          </button>
           <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
             <span className="toggle-track">
               <span className="toggle-thumb" />
@@ -340,11 +422,11 @@ function App() {
           <div className="stat-card">
             <p className="stat-label">Movies Watched</p>
             <p className="stat-value">{watched.length}</p>
-            <p className="stat-note">Your last entry {watched[0]?.title ?? '—'}</p>
+            <p className="stat-note">Your last entry {watched[0]?.title ?? ' - '}</p>
           </div>
           <div className="stat-card">
             <p className="stat-label">Average Rating</p>
-            <p className="stat-value">{averageRating ? averageRating.toFixed(1) : '—'}</p>
+            <p className="stat-value">{averageRating ? averageRating.toFixed(1) : ' - '}</p>
             <p className="stat-note">Based on your saved ratings</p>
           </div>
           <div className="stat-card highlight">
@@ -368,14 +450,23 @@ function App() {
             <div className="movie-card skeleton" key={`sk-${i}`} />
           ))}
           {!loading && recommended.map((movie) => (
-            <article className="movie-card" key={movie.id}>
+            <article
+              className="movie-card"
+              key={movie.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => openDetails(movie)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') openDetails(movie)
+              }}
+            >
               <div className="poster" style={{ backgroundImage: `url(${movie.poster})` }}>
                 <span className="runtime">{movie.runtime}</span>
               </div>
               <div className="movie-meta">
                 <div>
                   <h3>{movie.title}</h3>
-                  <p className="movie-sub">{movie.year} · {movie.genres.join(' · ')}</p>
+                  <p className="movie-sub">{movie.year} - {movie.genres.join(' - ')}</p>
                 </div>
                 <div className="row">
                   <div className="tmdb">
@@ -383,10 +474,21 @@ function App() {
                     <strong>{movie.rating.toFixed(1)}</strong>
                   </div>
                   <div className="row">
-                    <button className="ghost small" onClick={() => addToPlan(movie)}>Save</button>
                     <button
-                      className="ghost small"
-                      onClick={() => openLogForMovie(movie, 'add')}
+                      className="ghost small action-btn"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        addToPlan(movie)
+                      }}
+                    >
+                      Save
+                    </button>
+                    <button
+                      className="ghost small action-btn"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        openLogForMovie(movie, 'add')
+                      }}
                     >
                       Mark Watched
                     </button>
@@ -409,88 +511,168 @@ function App() {
           </div>
           <div className="upcoming">
             {upcoming.map((movie) => (
-              <div className="upcoming-row" key={movie.id}>
+              <div
+                className="upcoming-row"
+                key={movie.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => openDetails(movie)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') openDetails(movie)
+                }}
+              >
                 <div className="poster mini" style={{ backgroundImage: `url(${movie.poster})` }} />
                 <div>
                   <p className="movie-title">{movie.title}</p>
-                  <p className="movie-sub">{movie.genres.join(' · ')}</p>
+                  <p className="movie-sub">{movie.genres.join(' - ')}</p>
                 </div>
                 <span className="date-pill">{movie.runtime}</span>
-                <button className="ghost small" onClick={() => addToPlan(movie)}>Save</button>
+                <button
+                  className="ghost small action-btn"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    addToPlan(movie)
+                  }}
+                >
+                  Save
+                </button>
               </div>
             ))}
           </div>
         </div>
-        <aside className="side-panel">
+                <aside className="side-panel">
           <div className="side-section">
             <h3>Your Ratings</h3>
             {watched.slice(0, 2).map((movie) => (
               <div className="rating-item" key={movie.id}>
                 <div>
                   <p className="movie-title">{movie.title}</p>
-                  <p className="movie-sub">{movie.genres.join(' · ')}</p>
+                  <p className="movie-sub">{movie.genres.join(' - ')}</p>
                 </div>
                 <StarRating value={movie.userRating} />
-              </div>
-            ))}
-          </div>
-          <div className="side-section">
-            <h3>Plan to Watch</h3>
-            {planToWatch.slice(0, 3).map((movie) => (
-              <div className="plan-row" key={movie.id}>
-                <div className="poster mini" style={{ backgroundImage: `url(${movie.poster})` }} />
-                <div>
-                  <p className="movie-title">{movie.title}</p>
-                  <p className="movie-sub">Added {formatDate(movie.addedDate)}</p>
-                </div>
-                <button
-                  className="ghost small"
-                  onClick={() =>
-                    openLogForMovie(
-                      { id: movie.id, title: movie.title, poster: movie.poster, genres: movie.genres, year: movie.year },
-                      'add'
-                    )
-                  }
-                >
-                  Mark Watched
-                </button>
               </div>
             ))}
           </div>
         </aside>
       </section>
 
-      <section className="section">
+      
+      <section className="section" id="library">
         <div className="section-head">
           <div>
-            <h2>Recently Watched</h2>
-            <p>Editable ratings and notes stored locally.</p>
+            <h2>Your Library</h2>
+            <p>Plan and watched titles in one unified view.</p>
           </div>
-          <button className="ghost">View All</button>
-        </div>
-        <div className="watched-grid">
-          {watched.map((movie) => (
-            <div className="watched-card" key={movie.id}>
-              <div className="poster mini" style={{ backgroundImage: `url(${movie.poster})` }} />
-              <div>
-                <p className="movie-title">{movie.title}</p>
-                <p className="movie-sub">{movie.year ?? '—'} · {movie.genres.join(' · ')}</p>
-                <StarRating value={movie.userRating} />
-                {movie.notes && <p className="movie-notes">{movie.notes}</p>}
-              </div>
+          <div className="library-controls">
+            <div className="library-filters">
               <button
-                className="ghost small"
-                onClick={() =>
-                  openLogForMovie(
-                    { id: movie.id, title: movie.title, poster: movie.poster, genres: movie.genres, year: movie.year },
-                    'edit'
-                  )
-                }
+                className={libraryFilter === 'all' ? 'chip' : 'chip outline'}
+                onClick={() => setLibraryFilter('all')}
               >
-                Edit Notes
+                All
+              </button>
+              <button
+                className={libraryFilter === 'plan' ? 'chip' : 'chip outline'}
+                onClick={() => setLibraryFilter('plan')}
+              >
+                Plan
+              </button>
+              <button
+                className={libraryFilter === 'watched' ? 'chip' : 'chip outline'}
+                onClick={() => setLibraryFilter('watched')}
+              >
+                Watched
               </button>
             </div>
+            <input
+              className="library-search"
+              placeholder="Filter by title or genre"
+              value={libraryQuery}
+              onChange={(event) => setLibraryQuery(event.target.value)}
+            />
+          </div>
+        </div>
+        <div className="library-grid">
+          {filteredLibrary.map((item) => (
+            <div
+              className="library-card"
+              key={`${item.status}-${item.id}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => openDetails(item)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') openDetails(item)
+              }}
+            >
+              <div className="poster mini" style={{ backgroundImage: `url(${item.poster})` }} />
+              <div className="library-body">
+                <div className="library-top">
+                  <p className="movie-title">{item.title}</p>
+                  <span className={`status-pill ${item.status}`}>
+                    {item.status === 'watched' ? 'Watched' : 'Plan'}
+                  </span>
+                </div>
+                <p className="movie-sub">{item.year ?? '-'} - {item.genres.join(' - ')}</p>
+                <p className="library-meta">
+                  {item.status === 'watched'
+                    ? `Watched ${formatDate(item.date)}`
+                    : `Added ${formatDate(item.date)}`}
+                </p>
+                {item.status === 'watched' && item.userRating !== undefined && (
+                  <StarRating value={item.userRating} />
+                )}
+                {item.notes && <p className="movie-notes">{item.notes}</p>}
+              </div>
+              <div className="library-actions">
+                {item.status === 'plan' ? (
+                  <button
+                    className="ghost small action-btn"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      openLogForMovie(
+                        {
+                          id: item.id,
+                          title: item.title,
+                          poster: item.poster,
+                          genres: item.genres,
+                          year: item.year,
+                          overview: item.overview,
+                        },
+                        'add'
+                      )
+                    }}
+                  >
+                    Mark Watched
+                  </button>
+                ) : (
+                  <button
+                    className="ghost small action-btn"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      openLogForMovie(
+                        {
+                          id: item.id,
+                          title: item.title,
+                          poster: item.poster,
+                          genres: item.genres,
+                          year: item.year,
+                          overview: item.overview,
+                        },
+                        'edit'
+                      )
+                    }}
+                  >
+                    Edit Notes
+                  </button>
+                )}
+              </div>
+            </div>
           ))}
+          {!filteredLibrary.length && (
+            <div className="empty-state">
+              <p>No titles match these filters yet.</p>
+            </div>
+          )}
         </div>
       </section>
 
@@ -500,7 +682,7 @@ function App() {
             <div className="log-header">
               <div>
                 <p className="log-title">{activeLog.movie.title}</p>
-                <p className="movie-sub">{activeLog.movie.genres.join(' · ')}</p>
+                <p className="movie-sub">{activeLog.movie.genres.join(' - ')}</p>
               </div>
               <button className="ghost small" onClick={() => setActiveLog(null)}>Close</button>
             </div>
@@ -532,6 +714,33 @@ function App() {
           </div>
         </div>
       )}
+      {activeDetails && (
+        <div className="detail-drawer" role="dialog" aria-modal="true">
+          <div className="detail-card">
+            <div className="detail-header">
+              <div>
+                <p className="log-title">{activeDetails.title}</p>
+                <p className="movie-sub">
+                  {activeDetails.year ?? ''}{activeDetails.genres?.length ? ` - ${activeDetails.genres.join(' - ')}` : ''}
+                </p>
+              </div>
+              <button className="ghost small" onClick={() => setActiveDetails(null)}>Close</button>
+            </div>
+            <div className="detail-body">
+              {activeDetails.poster && (
+                <div className="poster detail" style={{ backgroundImage: `url(${activeDetails.poster})` }} />
+              )}
+              <div className="detail-copy">
+                <div className="detail-status">
+                  <span>Status</span>
+                  <strong>{getStatusLabel(activeDetails.id)}</strong>
+                </div>
+                <p>{activeDetails.overview}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -539,7 +748,7 @@ function App() {
 function mapMovies(list: TmdbMovie[], genres: TmdbGenre[], isUpcoming = false): MovieCard[] {
   const genreMap = new Map(genres.map((genre) => [genre.id, genre.name]))
   return list.slice(0, 8).map((movie) => {
-    const year = movie.release_date ? movie.release_date.split('-')[0] : '—'
+    const year = movie.release_date ? movie.release_date.split('-')[0] : ' - '
     const displayGenres = movie.genre_ids.map((id) => genreMap.get(id)).filter(Boolean) as string[]
     return {
       id: movie.id,
@@ -550,6 +759,7 @@ function mapMovies(list: TmdbMovie[], genres: TmdbGenre[], isUpcoming = false): 
       runtime: isUpcoming && movie.release_date ? formatDate(movie.release_date) : `${year}`,
       poster: getPosterUrl(movie.poster_path) ||
         'https://images.unsplash.com/photo-1502134249126-9f3755a50d78?q=80&w=600&auto=format&fit=crop',
+      overview: movie.overview?.trim() ? movie.overview : undefined,
     }
   })
 }
