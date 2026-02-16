@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import {
   discoverMovies,
@@ -19,6 +19,7 @@ type MovieCard = {
   runtime: string
   poster: string
   overview?: string
+  releaseDate?: string
 }
 
 type WatchedItem = {
@@ -41,6 +42,7 @@ type PlanItem = {
   addedDate: string
   year?: string
   overview?: string
+  releaseDate?: string
 }
 
 const watchedSeed: WatchedItem[] = [
@@ -115,7 +117,7 @@ function App() {
   const [planToWatch, setPlanToWatch] = useState<PlanItem[]>([])
   const [activeLog, setActiveLog] = useState<{
     mode: 'add' | 'edit'
-    movie: { id: number; title: string; poster: string; genres: string[]; year?: string; overview?: string }
+    movie: { id: number; title: string; poster: string; genres: string[]; year?: string; overview?: string; releaseDate?: string }
   } | null>(null)
   const [logRating, setLogRating] = useState(4)
   const [logNotes, setLogNotes] = useState('')
@@ -129,6 +131,9 @@ function App() {
     year?: string
     genres?: string[]
   } | null>(null)
+  const [showScrollTop, setShowScrollTop] = useState(false)
+  const searchTimerRef = useRef<number | null>(null)
+  const upcomingRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     const saved = localStorage.getItem('theme')
@@ -137,6 +142,23 @@ function App() {
       document.documentElement.dataset.theme = saved
     } else {
       document.documentElement.dataset.theme = 'dark'
+    }
+  }, [])
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const trigger = upcomingRef.current
+      if (!trigger) {
+        setShowScrollTop(false)
+        return
+      }
+      const triggerPoint = trigger.offsetTop - 120
+      setShowScrollTop(window.scrollY >= triggerPoint)
+    }
+    handleScroll()
+    window.addEventListener('scroll', handleScroll, { passive: true })
+    return () => {
+      window.removeEventListener('scroll', handleScroll)
     }
   }, [])
 
@@ -174,12 +196,8 @@ function App() {
 
     const load = async () => {
       try {
-        const [rec, up] = await Promise.all([
-          discoverMovies(sortBy, selectedGenre),
-          fetchUpcoming(),
-        ])
+        const up = await fetchUpcoming()
         if (!alive) return
-        setRecommended(mapMovies(rec, genres))
         setUpcoming(mapMovies(up, genres, true))
       } catch (err) {
         if (alive) setError('Unable to load TMDB data. Check your API key and try again.')
@@ -193,14 +211,67 @@ function App() {
     return () => {
       alive = false
     }
-  }, [genres, selectedGenre, sortBy])
+  }, [genres])
+
+  useEffect(() => {
+    let alive = true
+    const trimmed = query.trim()
+    if (!trimmed) {
+      setLoading(true)
+      setError('')
+      const loadDiscover = async () => {
+        try {
+          const rec = await discoverMovies(sortBy, selectedGenre)
+          if (!alive) return
+          setRecommended(mapMovies(rec, genres))
+        } catch (err) {
+          if (alive) setError('Unable to load TMDB data. Check your API key and try again.')
+        } finally {
+          if (alive) setLoading(false)
+        }
+      }
+      loadDiscover()
+      return () => {
+        alive = false
+      }
+    }
+
+    if (searchTimerRef.current) {
+      window.clearTimeout(searchTimerRef.current)
+    }
+
+    searchTimerRef.current = window.setTimeout(() => {
+      setLoading(true)
+      setError('')
+      const loadSearch = async () => {
+        try {
+          const results = await searchMovies(trimmed, sortBy, selectedGenre)
+          if (!alive) return
+          setRecommended(mapMovies(results, genres))
+        } catch (err) {
+          if (alive) setError('Search failed. Try again.')
+        } finally {
+          if (alive) setLoading(false)
+        }
+      }
+      loadSearch()
+    }, 350)
+
+    return () => {
+      alive = false
+      if (searchTimerRef.current) {
+        window.clearTimeout(searchTimerRef.current)
+      }
+    }
+  }, [genres, query, selectedGenre, sortBy])
 
   const handleSearch = async () => {
-    if (!query) return
+    const trimmed = query.trim()
+    if (!trimmed) return
     setLoading(true)
     setError('')
     try {
-      const results = await searchMovies(query, sortBy, selectedGenre)
+      const results = await searchMovies(trimmed, sortBy, selectedGenre)
       setRecommended(mapMovies(results, genres))
     } catch (err) {
       setError('Search failed. Try again.')
@@ -253,12 +324,20 @@ function App() {
       genres: movie.genres,
       year: movie.year,
       overview: movie.overview,
+      releaseDate: movie.releaseDate,
       addedDate: new Date().toISOString(),
     }
     setPlanToWatch((prev) => [next, ...prev])
   }
 
-  const openLogForMovie = (movie: { id: number; title: string; poster: string; genres: string[]; year?: string; overview?: string }, mode: 'add' | 'edit') => {
+  const openLogForMovie = (
+    movie: { id: number; title: string; poster: string; genres: string[]; year?: string; overview?: string; releaseDate?: string },
+    mode: 'add' | 'edit'
+  ) => {
+    if (movie.releaseDate && !hasReleaseDateReached(movie.releaseDate)) {
+      window.alert('This title is not released yet. You can mark it watched after the release date.')
+      return
+    }
     setActiveLog({ movie, mode })
     if (mode === 'edit') {
       const existing = watched.find((item) => item.id === movie.id)
@@ -309,6 +388,7 @@ function App() {
         userRating: item.userRating,
         notes: item.notes,
         overview: item.overview,
+        releaseDate: undefined as string | undefined,
       })),
       ...planToWatch.map((item) => ({
         id: item.id,
@@ -319,6 +399,8 @@ function App() {
         status: 'plan' as const,
         date: item.addedDate,
         overview: item.overview,
+        notes: undefined,
+        releaseDate: item.releaseDate,
       })),
     ]
 
@@ -397,7 +479,17 @@ function App() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
-              <button className="primary" onClick={handleSearch}>Search</button>
+              <button className="primary icon-only" onClick={handleSearch} aria-label="Search">
+                <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+                  <path
+                    d="M16.5 16.5l4 4M4 11a7 7 0 1 0 14 0 7 7 0 0 0-14 0"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    fill="none"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
             </div>
             <div className="filters">
               <select onChange={(event) => setSelectedGenre(toOptionalNumber(event.target.value))}>
@@ -413,7 +505,6 @@ function App() {
                 <option value="release_date.desc">Sort: Release Date</option>
                 <option value="vote_average.desc">Sort: Rating</option>
               </select>
-              <button className="ghost" onClick={handleSearch}>Advanced Filters</button>
             </div>
           </div>
           {error && <p className="error">{error}</p>}
@@ -431,7 +522,19 @@ function App() {
           </div>
           <div className="stat-card highlight">
             <p className="stat-label">Next to Watch</p>
-            <p className="stat-value">{planToWatch[0]?.title ?? 'Add a film'}</p>
+            {planToWatch[0]?.title ? (
+              <button
+                className="stat-value link"
+                onClick={() => {
+                  setLibraryFilter('plan')
+                  scrollToSection('library')
+                }}
+              >
+                {planToWatch[0].title}
+              </button>
+            ) : (
+              <p className="stat-value">Add a film</p>
+            )}
             <p className="stat-note">Saved {planToWatch.length} titles</p>
           </div>
         </div>
@@ -473,7 +576,7 @@ function App() {
                     <span>TMDB</span>
                     <strong>{movie.rating.toFixed(1)}</strong>
                   </div>
-                  <div className="row">
+                  <div className="row movie-actions">
                     <button
                       className="ghost small action-btn"
                       onClick={(event) => {
@@ -500,7 +603,7 @@ function App() {
         </div>
       </section>
 
-      <section className="section split">
+      <section className="section split" ref={upcomingRef}>
         <div>
           <div className="section-head">
             <div>
@@ -594,20 +697,22 @@ function App() {
         </div>
         <div className="library-grid">
           {filteredLibrary.map((item) => (
-            <div
-              className="library-card"
-              key={`${item.status}-${item.id}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => openDetails(item)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') openDetails(item)
-              }}
-            >
-              <div className="poster mini" style={{ backgroundImage: `url(${item.poster})` }} />
+            <div className="library-card" key={`${item.status}-${item.id}`}>
+              <button
+                className="poster mini poster-button"
+                style={{ backgroundImage: `url(${item.poster})` }}
+                onClick={() => openDetails(item)}
+                aria-label={`Open details for ${item.title}`}
+              />
               <div className="library-body">
                 <div className="library-top">
-                  <p className="movie-title">{item.title}</p>
+                  <button
+                    className="movie-title title-button"
+                    onClick={() => openDetails(item)}
+                    type="button"
+                  >
+                    {item.title}
+                  </button>
                   <span className={`status-pill ${item.status}`}>
                     {item.status === 'watched' ? 'Watched' : 'Plan'}
                   </span>
@@ -637,6 +742,7 @@ function App() {
                           genres: item.genres,
                           year: item.year,
                           overview: item.overview,
+                          releaseDate: item.releaseDate,
                         },
                         'add'
                       )
@@ -715,8 +821,13 @@ function App() {
         </div>
       )}
       {activeDetails && (
-        <div className="detail-drawer" role="dialog" aria-modal="true">
-          <div className="detail-card">
+        <div
+          className="detail-drawer"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setActiveDetails(null)}
+        >
+          <div className="detail-card" onClick={(event) => event.stopPropagation()}>
             <div className="detail-header">
               <div>
                 <p className="log-title">{activeDetails.title}</p>
@@ -741,6 +852,22 @@ function App() {
           </div>
         </div>
       )}
+      <button
+        className={`scroll-top ${showScrollTop ? 'show' : ''}`}
+        onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+        aria-label="Back to top"
+      >
+        <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+          <path
+            d="M6 14l6-6 6 6"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
     </div>
   )
 }
@@ -760,6 +887,7 @@ function mapMovies(list: TmdbMovie[], genres: TmdbGenre[], isUpcoming = false): 
       poster: getPosterUrl(movie.poster_path) ||
         'https://images.unsplash.com/photo-1502134249126-9f3755a50d78?q=80&w=600&auto=format&fit=crop',
       overview: movie.overview?.trim() ? movie.overview : undefined,
+      releaseDate: movie.release_date || undefined,
     }
   })
 }
@@ -768,6 +896,12 @@ function formatDate(dateString: string) {
   const date = new Date(dateString)
   if (Number.isNaN(date.valueOf())) return dateString
   return date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })
+}
+
+function hasReleaseDateReached(dateString: string) {
+  const date = new Date(dateString)
+  if (Number.isNaN(date.valueOf())) return true
+  return date.getTime() <= Date.now()
 }
 
 function toOptionalNumber(value: string) {
